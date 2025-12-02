@@ -1,11 +1,13 @@
-"""RAG MCP tools"""
+"""MCP and utility tools"""
 
 from datetime import datetime
 
 import chromadb
-from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("NPC RAG")
+# from mcp.server.fastmcp import FastMCP
+
+DEFAULT_SITUATION = "standing in your usual location"
+# mcp = FastMCP("NPC RAG")
 
 db = chromadb.PersistentClient(
     path="./chromadb",
@@ -15,8 +17,12 @@ template_collection = db.get_collection("character_templates")
 memory_collection = db.get_or_create_collection("npc_memories")
 
 
-@mcp.tool()
-def get_dialogue_style(personality: str, situation: str) -> list[str]:
+def get_dialogue_style(
+    personality: str,
+    situation: str | None = None,
+) -> list[str]:
+    situation = situation or DEFAULT_SITUATION
+
     results = dialogue_collection.query(
         query_texts=[f"{personality} {situation}"],
         n_results=1,
@@ -24,7 +30,6 @@ def get_dialogue_style(personality: str, situation: str) -> list[str]:
     return results["documents"][0]
 
 
-@mcp.tool()
 def get_character_template(
     description: str,
     race: str = None,
@@ -50,7 +55,6 @@ def get_character_template(
     return results["metadatas"][0][0]
 
 
-@mcp.tool()
 def store_npc_memory(
     interaction: str,
     npc_id: str,
@@ -64,7 +68,6 @@ def store_npc_memory(
     return "stored"
 
 
-@mcp.tool()
 def retrieve_npc_memory(
     context: str,
     npc_id: str,
@@ -75,3 +78,8 @@ def retrieve_npc_memory(
         n_results=1,
     )
     return results["documents"][0] if results["documents"] else []
+
+
+# if __name__ == "__main__":
+#     # Initialise and run the server
+#     mcp.run(transport="stdio")
