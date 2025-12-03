@@ -1,9 +1,10 @@
 from dotenv import load_dotenv
 import os
 import json
-from typing import Literal
 
-from uagents import Agent, Context, Model
+from uagents import Agent, Context
+
+from data_models import SetupMessage, PlayerMessage, NPCMessage
 
 # from uagents_adapter import MCPServerAdapter
 
@@ -17,23 +18,6 @@ from mcp_tools.server import (
 from openai import AsyncOpenAI
 
 load_dotenv()
-
-
-class SetupMessage(Model):
-    """Natural language user input"""
-
-    type: Literal["str"]
-    description: str
-
-
-class PlayerMessage(Model):
-    type: Literal["str"]
-    text: str
-
-
-class NPCMessage(Model):
-    type: Literal["str"]
-    text: str
 
 
 client = AsyncOpenAI(
