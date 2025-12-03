@@ -21,7 +21,10 @@ def main():
     )
 
     # Create and populate dialogue collection
-    dialogue_collection = db.create_collection("character_dialogue")
+    dialogue_collection = db.create_collection(
+        name="character_dialogue",
+        metadata={"hnsw:space": "cosine"},
+    )
     counter = 0
     for json_file in tqdm(DIALOGUE_DATA_PATH.rglob("*.json")):
         with open(json_file, "r", encoding="utf-8") as file:
@@ -39,7 +42,10 @@ def main():
     logger.info("JSON dialogue extraction complete")
 
     # Create and populate template collection
-    template_collection = db.create_collection("character_templates")
+    template_collection = db.create_collection(
+        name="character_templates",
+        metadata={"hnsw:space": "cosine"},
+    )
     with open(
         TEMPLATE_DATA_PATH / "dnd_chars_unique.json",
         "r",

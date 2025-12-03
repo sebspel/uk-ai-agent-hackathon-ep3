@@ -134,3 +134,7 @@ async def chat_with_player(ctx: Context, sender: str, message: PlayerMessage):
         npc.name,
     )
     await ctx.send(sender, NPCMessage(text=npc_reply))
+
+
+if __name__ == "__main__":
+    npc.run()

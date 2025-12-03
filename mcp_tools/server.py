@@ -14,7 +14,10 @@ db = chromadb.PersistentClient(
 )
 dialogue_collection = db.get_collection("character_dialogue")
 template_collection = db.get_collection("character_templates")
-memory_collection = db.get_or_create_collection("npc_memories")
+memory_collection = db.get_or_create_collection(
+    name="npc_memories",
+    metadata={"hnsw:space": "cosine"},
+)
 
 
 def get_dialogue_style(
