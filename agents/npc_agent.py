@@ -39,6 +39,11 @@ class NPCAgent:
         except Exception as e:
             logger.error(f"Template collection not found: {e}")
             raise
+        try:
+            db.delete_collection("npc_memories")
+            logger.info("Previous memories deleted!")
+        except Exception as e:
+            logger.info("No memories to delete!")
         self.memory_collection = db.create_collection(
             name="npc_memories",
             metadata={"hnsw:space": "cosine"},
@@ -51,18 +56,18 @@ class NPCAgent:
             api_key=os.getenv("ASI_API_KEY"),
             base_url="https://inference.asicloud.cudos.org/v1",
         )
+        self.DEFAULT_SITUATION = "standing in your usual location"
+        self.npc_name = None
+        self.description = None
+        self.character_template = None
+        self.dialogue_style = None
+        self.setup_from_description(description)
         self.uagent = Agent(
-            name="NPCAgent",
+            name=self.npc_name,
             seed="npc_agent_seed",
             port=8001,
             mailbox=True,
         )
-        self.DEFAULT_SITUATION = "standing in your usual location"
-        self.description = None
-        self.character_template = None
-        self.dialogue_style = None
-        self.npc_name = None
-        self.setup_from_description(description)
         self.setup_protocol()
 
     def _get_dialogue_style(
@@ -179,7 +184,7 @@ class NPCAgent:
             structured_response.get("situation"),
         )
         retrieved_npc_name = structured_response.get("npc_name")
-        self.npc_name = retrieved_npc_name or self.uagent.name
+        self.npc_name = retrieved_npc_name or "Gerald"
 
     def setup_protocol(self):
         """Set up uAgent chat protocol"""
@@ -194,7 +199,7 @@ class NPCAgent:
                     sender,
                     ChatAcknowledgement(
                         timestamp=datetime.now(),
-                        acknowledged_message_id=message.msg_id,
+                        acknowledged_msg_id=message.msg_id,
                     ),
                 )
                 # Extract text from message
@@ -286,7 +291,13 @@ class NPCAgent:
 
 
 if __name__ == "__main__":
-    test_description = "You are a dwarf, fighter, tavern keeper."
+    test_description = (
+        "Name: Gary, "
+        "Personality: rude, "
+        "Class: Fighter, "
+        "Race: Dwarf, "
+        "Situation: Hanging out in the tavern"
+    )
     try:
         agent = NPCAgent(test_description)
         agent.run()
