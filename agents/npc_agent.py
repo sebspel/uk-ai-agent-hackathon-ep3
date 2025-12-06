@@ -418,8 +418,8 @@ class NPCAgent:
             result = json.loads(response.choices[0].message.content)
             return (
                 result.get("is_attack", False),
-                result.get("attack_roll", 2),
-                result.get("damage", 0),
+                int(result.get("attack_roll", 2)),
+                int(result.get("damage", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to parse damage: {e}")
@@ -431,7 +431,7 @@ class NPCAgent:
         hit = int(attack_roll) >= int(ac)
 
         if hit:
-            self.current_hp = max(0, self.current_hp - damage)
+            self.current_hp = max(0, int(self.current_hp) - damage)
 
         return {
             "hit": hit,
