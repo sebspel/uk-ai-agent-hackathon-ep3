@@ -28,6 +28,28 @@ else:
 
 
 def main():
+    """Process and load D&D dialogue and character template data into ChromaDB.
+
+    This function performs the following operations:
+    1. Creates or recreates ChromaDB collections for character dialogue and templates
+    2. Loads dialogue data from JSON files in the dialogue_data directory
+    3. Extracts character utterances (excluding DM dialogue) and stores them
+    4. Loads character templates from cleaned template data
+    5. Uses GPU acceleration for embeddings if available (CUDA or MPS)
+
+    The function processes:
+        - Dialogue data: Character speech from Critical Role episodes
+        - Character templates: Pre-built D&D character stat blocks with metadata
+
+    Collections created:
+        - character_dialogue: Stores individual character utterances for dialogue style retrieval
+        - character_templates: Stores character stat blocks with searchable summaries
+
+    Side Effects:
+        - Deletes existing collections if they exist
+        - Creates new ChromaDB collections
+        - Writes embeddings to ./chromadb directory
+    """
     db = chromadb.PersistentClient(
         path="./chromadb",
     )

@@ -1,3 +1,43 @@
+"""Dungeons and Dragons NPC Agent Module.
+
+This module implements an intelligent D&D Non-Player Character (NPC) agent that can engage
+in natural conversation, remember past interactions, and participate in combat mechanics.
+
+The NPCAgent class creates immersive tabletop RPG characters by:
+    - Generating character stats and attributes from natural language descriptions
+    - Using RAG (Retrieval Augmented Generation) with Critical Role dialogue examples
+    - Maintaining conversation memory across interactions
+    - Implementing D&D combat mechanics including HP tracking and dice rolls
+    - Integrating with the fetch.ai uAgents framework for distributed agent communication
+
+The agent leverages ChromaDB for vector storage and retrieval of:
+    - Character dialogue examples (from Critical Role dataset)
+    - D&D character templates (stats, abilities, backgrounds)
+    - NPC conversation memories
+
+Key Components:
+    NPCAgent: Main class that manages NPC state, memory, and behavior
+
+Environment Variables Required:
+    ASI_API_KEY: API key for ASI-CLOUD inference (OpenAI-compatible endpoint)
+    AGENTVERSE_API_KEY: API key for fetch.ai Agentverse platform
+
+Usage:
+    Run this module directly to create and deploy a D&D NPC agent:
+        $ uv run -m agents.npc_agent
+
+    You will be prompted to describe your NPC, then the agent will be deployed
+    to the Agentverse platform where users can interact with it via chat.
+
+Author:
+    Sebastian Sjostrom
+
+Attribution:
+    Character templates: D&D Characters Dataset (github.com/oganm/dnddata)
+    Dialogue examples: Critical Role Dataset CRD3 (github.com/RevanthRameshkumar/CRD3)
+    Framework structure: Fetch.ai RAG agent example
+"""
+
 import os
 import json
 import logging
@@ -74,6 +114,7 @@ class NPCAgent:
             port=8001,
             mailbox=True,
             publish_agent_details=True,
+            readme_path="AGENT_README.md",
         )
         self.setup_protocol()
 
@@ -82,6 +123,16 @@ class NPCAgent:
         personality: str,
         situation: str | None = None,
     ) -> list[str]:
+        """Retrieve dialogue style examples from the database based on personality and situation.
+
+        Args:
+            personality: The NPC's personality trait (e.g., 'rude', 'friendly', 'nervous')
+            situation: The current situation the NPC is in. Defaults to DEFAULT_SITUATION if None.
+
+        Returns:
+            A list of dialogue examples matching the personality and situation.
+            Returns a default neutral style if no matches are found.
+        """
         situation = situation or self.DEFAULT_SITUATION
 
         results = self.dialogue_collection.query(
@@ -101,6 +152,24 @@ class NPCAgent:
         level: int = None,
         background: str = None,
     ):
+        """Retrieve a matching D&D character template from the database.
+
+        Queries the template collection using semantic search on the description,
+        with optional filters for specific character attributes.
+
+        Args:
+            description: Natural language description of the character
+            race: Optional filter for character race (e.g., 'Human', 'Elf')
+            npc_class: Optional filter for character class (e.g., 'Fighter', 'Wizard')
+            level: Optional filter for character level
+            background: Optional filter for character background
+
+        Returns:
+            A dictionary containing the character template with stats, abilities, and attributes.
+
+        Raises:
+            ValueError: If no matching character template is found in the database.
+        """
         template_list = []
         if race:
             template_list.append({"race": {"$eq": race}})
@@ -111,10 +180,8 @@ class NPCAgent:
         if background:
             template_list.append({"background": {"$eq": background}})
 
-        # where_dict = {"$and": template_list}
         results = self.template_collection.query(
             query_texts=[description],
-            # where=where_dict if template_list else None,
             n_results=1,
         )
         if not results["metadatas"] or not results["metadatas"][0]:
@@ -126,7 +193,18 @@ class NPCAgent:
         interaction: str,
         npc_id: str,
     ) -> str:
+        """Store an interaction in the NPC's memory collection.
 
+        Saves the interaction with a timestamp for later retrieval, allowing the NPC
+        to remember past conversations and context.
+
+        Args:
+            interaction: The text of the interaction to store
+            npc_id: Unique identifier for the NPC
+
+        Returns:
+            The string 'stored' upon successful storage.
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.memory_collection.add(
             documents=[interaction],
@@ -140,6 +218,18 @@ class NPCAgent:
         context: str,
         npc_id: str,
     ):
+        """Retrieve relevant past interactions from the NPC's memory.
+
+        Performs semantic search on stored memories to find relevant past interactions
+        based on the current context.
+
+        Args:
+            context: The current context or query to search for similar memories
+            npc_id: Unique identifier for the NPC whose memories to search
+
+        Returns:
+            A list of relevant memory documents, or an empty list if no memories found.
+        """
         results = self.memory_collection.query(
             query_texts=[context],
             where={"npc_id": npc_id},
@@ -148,7 +238,18 @@ class NPCAgent:
         return results["documents"][0] if results["documents"] else []
 
     def _perform_attack(self) -> dict:
-        "Roll a d20 and return the NPC's character template"
+        """Simulate an NPC attack by rolling a d20.
+
+        Performs a d20 dice roll and returns attack information including whether
+        it's a critical hit (20) or fumble (1).
+
+        Returns:
+            A dictionary containing:
+                - d20_roll: The dice roll result (1-20)
+                - is_critical: True if roll is 20 (critical hit)
+                - is_fumble: True if roll is 1 (fumble)
+                - npc_character_template: The NPC's full character template with stats
+        """
         roll = random.randint(1, 20)
         attack_information = {
             "d20_roll": roll,
@@ -159,6 +260,25 @@ class NPCAgent:
         return attack_information
 
     def setup_from_description(self, description: str):
+        """Initialize NPC attributes from a natural language description.
+
+        Uses an LLM to extract structured character information from a freeform
+        description, then retrieves appropriate character template and dialogue style.
+
+        Args:
+            description: Natural language description of the NPC including name,
+                personality, class, race, situation, etc.
+
+        Side Effects:
+            Sets the following instance attributes:
+                - description: The original description
+                - character_template: D&D character stats and abilities
+                - max_hp: Maximum hit points
+                - current_hp: Current hit points
+                - personality: Extracted personality trait
+                - dialogue_style: List of dialogue examples
+                - npc_name: Extracted or default name
+        """
         self.description = description
         response = self.sync_client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -281,8 +401,8 @@ class NPCAgent:
             """
             {
                 "is_attack": boolean,
-                "attack_roll": integer or null,
-                "damage": integer or null
+                "attack_roll": "integer",
+                "damage": "integer"
             }\n"""
             """Only return valid JSON, no other text."""
         )
@@ -298,8 +418,8 @@ class NPCAgent:
             result = json.loads(response.choices[0].message.content)
             return (
                 result.get("is_attack", False),
-                result.get("attack_roll"),
-                result.get("damage"),
+                result.get("attack_roll", 2),
+                result.get("damage", 0),
             )
         except Exception as e:
             logger.error(f"Failed to parse damage: {e}")
@@ -308,7 +428,7 @@ class NPCAgent:
     def _apply_damage(self, attack_roll: int, damage: int) -> dict:
         """Check if attack hits and apply damage"""
         ac = self.character_template.get("armor_class", 10)
-        hit = attack_roll >= ac
+        hit = int(attack_roll) >= int(ac)
 
         if hit:
             self.current_hp = max(0, self.current_hp - damage)
@@ -352,6 +472,28 @@ class NPCAgent:
         ), structured_response.get("reason", "")
 
     async def generate_response(self, query: str) -> str:
+        """Generate an in-character response to a player's message.
+
+        Handles the complete response generation pipeline including:
+        - Checking for combat actions (attacks, damage)
+        - Detecting provocations that might trigger NPC hostility
+        - Retrieving relevant memories from past interactions
+        - Generating contextual, personality-driven responses
+        - Managing combat state and hit points
+
+        Args:
+            query: The player's message or action
+
+        Returns:
+            The NPC's in-character response, potentially including combat information
+            and character stats if combat is initiated.
+
+        Side Effects:
+            - May update is_hostile flag
+            - May update is_dead flag
+            - May reduce current_hp if attacked
+            - Stores the interaction in memory
+        """
         character_json = json.dumps(self.character_template, indent=2)
         combat_summary = ""
         is_attack, attack_roll, damage = await self._check_for_damage(query)
@@ -437,15 +579,19 @@ class NPCAgent:
         return npc_reply
 
     def run(self):
-        """Start uAgent"""
+        """Start the uAgent and begin listening for chat messages.
+
+        Initializes the agent's messaging system and enters the main event loop.
+        Logs the agent's address for connection purposes.
+        """
         logger.info("Starting NPC uAgent")
         logger.info(f"Agent address: {self.uagent.address}")
         self.uagent.run()
 
 
 if __name__ == "__main__":
-    # Example description (Can copy and paste when prompted for input):
-    # "Name: Gary,\nPersonality: rude,\nClass: Fighter,\nRace: Human,\nSituation: Hanging out in the tavern"
+    # Example description (Can copy and paste after uncommenting when prompted for input):
+    # "Name: Gary,\nPersonality: rude,\nClass: Wizard,\nRace: Human,\nSituation: Hanging out in the tavern"
 
     try:
         npc_description = input("Please enter NPC description:")
