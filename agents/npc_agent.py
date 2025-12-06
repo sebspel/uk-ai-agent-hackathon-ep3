@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import random
 from datetime import datetime
 from uuid import uuid4
 
@@ -57,16 +58,22 @@ class NPCAgent:
             base_url="https://inference.asicloud.cudos.org/v1",
         )
         self.DEFAULT_SITUATION = "standing in your usual location"
+        self.is_dead = False
+        self.is_hostile = False
         self.npc_name = None
         self.description = None
         self.character_template = None
         self.dialogue_style = None
+        self.personality = None
+        self.max_hp = None
+        self.current_hp = None
         self.setup_from_description(description)
         self.uagent = Agent(
             name=self.npc_name,
             seed="npc_agent_seed",
             port=8001,
             mailbox=True,
+            publish_agent_details=True,
         )
         self.setup_protocol()
 
@@ -140,6 +147,17 @@ class NPCAgent:
         )
         return results["documents"][0] if results["documents"] else []
 
+    def _perform_attack(self) -> dict:
+        "Roll a d20 and return the NPC's character template"
+        roll = random.randint(1, 20)
+        attack_information = {
+            "d20_roll": roll,
+            "is_critical": roll == 20,
+            "is_fumble": roll == 1,
+            "npc_character_template": self.character_template,
+        }
+        return attack_information
+
     def setup_from_description(self, description: str):
         self.description = description
         response = self.sync_client.chat.completions.create(
@@ -156,7 +174,7 @@ class NPCAgent:
                     "race": "string",
                     "npc_class": "string",
                     "background": "string",
-                    "level": "integer",
+                    "level": "integer"
                 }
                 Only return valid JSON, no other text.""",
                 },
@@ -179,8 +197,10 @@ class NPCAgent:
             level=structured_response.get("level"),
             background=structured_response.get("background"),
         )
+        self.max_hp = self.current_hp = self.character_template.get("HP", 20)
+        self.personality = structured_response.get("personality", "neutral temperament")
         self.dialogue_style = self._get_dialogue_style(
-            structured_response.get("personality", "neutral temperament"),
+            self.personality,
             structured_response.get("situation"),
         )
         retrieved_npc_name = structured_response.get("npc_name")
@@ -211,7 +231,10 @@ class NPCAgent:
                 logger.info(f"Received message from: {sender}")
 
                 # Generate response using RAG + LLM
-                response = await self.generate_response(user_text)
+                if self.is_dead:
+                    response = f"*{self.npc_name} lies on the ground, cold...*"
+                else:
+                    response = await self.generate_response(user_text)
                 # Send response back to user
                 await ctx.send(
                     sender,
@@ -251,21 +274,150 @@ class NPCAgent:
         # Add protocol to uAgent
         self.uagent.include(protocol, publish_manifest=True)
 
-    async def generate_response(self, query: str) -> str:
-        # Get character template
-        character_template = self.character_template
-        dialogue_style = self.dialogue_style
-        retrieved_memories = self._retrieve_npc_memory(query, self.uagent.name)
-        npc_memories = (
-            retrieved_memories[0] if retrieved_memories else "First encounter."
+    async def _check_for_damage(self, player_message: str) -> tuple[bool, int, int]:
+        """Parse player's attack roll and damage from their message"""
+        system_content = (
+            """Extract attack roll and damage from this message if present:\n"""
+            """
+            {
+                "is_attack": boolean,
+                "attack_roll": integer or null,
+                "damage": integer or null
+            }\n"""
+            """Only return valid JSON, no other text."""
         )
-        memory_context = f"Previous interactions: {npc_memories}"
-        system_content = f"""You are {self.npc_name}.
-        Character: {character_template}
-        Dialogue Style: {dialogue_style}
-        Past Interactions: {memory_context}
-        Respond in character to the player's message.
-        """
+        response = await self.async_client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": player_message},
+            ],
+        )
+        try:
+            result = json.loads(response.choices[0].message.content)
+            return (
+                result.get("is_attack", False),
+                result.get("attack_roll"),
+                result.get("damage"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to parse damage: {e}")
+            return False, None, None
+
+    def _apply_damage(self, attack_roll: int, damage: int) -> dict:
+        """Check if attack hits and apply damage"""
+        ac = self.character_template.get("armor_class", 10)
+        hit = attack_roll >= ac
+
+        if hit:
+            self.current_hp = max(0, self.current_hp - damage)
+
+        return {
+            "hit": hit,
+            "ac": ac,
+            "damage_taken": damage if hit else 0,
+            "current_hp": self.current_hp,
+            "is_dead": self.current_hp <= 0,
+        }
+
+    async def _check_for_provocation(self, player_message: str):
+        """Check if the player has provoked an attack"""
+        system_content = (
+            f"""You are analysing if a player's message would """
+            f"""provoke you, {self.npc_name}, to attack given:\n"""
+            f"""Your personality: {self.personality}\n"""
+            f"""Player message: {player_message}\n"""
+            f"""
+            {{
+                "hostile": boolean,
+                "reason": "string"
+            }}\n"""
+            f"""Only return valid JSON, no other text."""
+        )
+        response = await self.async_client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": player_message},
+            ],
+        )
+        try:
+            structured_response = json.loads(response.choices[0].message.content)
+        except Exception as e:
+            logger.error(f"Failed to parse LLM response as JSON: {e}")
+        return structured_response.get(
+            "hostile", self.is_hostile
+        ), structured_response.get("reason", "")
+
+    async def generate_response(self, query: str) -> str:
+        character_json = json.dumps(self.character_template, indent=2)
+        combat_summary = ""
+        is_attack, attack_roll, damage = await self._check_for_damage(query)
+        if is_attack:
+            logger.info("Combat triggered by player!")
+            self.is_hostile = True
+            player_attack_result = self._apply_damage(attack_roll, damage)
+            if player_attack_result["is_dead"]:
+                logger.info("NPC agent is dead...")
+                self.is_dead = True
+                return (
+                    f"*{self.npc_name} has slipped off their mortal coil...*\n\n"
+                    f"Final blow dealt: {damage} damage."
+                )
+            if player_attack_result["hit"]:
+                system_content = (
+                    f"You are {self.npc_name}.\n"
+                    f"You just took: {damage} damage from the player.\n"
+                    f"Character: {character_json}\n"
+                    f"Your HP: {self.current_hp}/{self.max_hp}\n"
+                    f"Respond in character to the player's attack."
+                )
+            else:
+                system_content = (
+                    f"You are {self.npc_name}.\n"
+                    f"The player attempted to attack you but missed.\n"
+                    f"Character: {character_json}\n"
+                    f"Your HP: {self.current_hp}/{self.max_hp}\n"
+                    f"Respond in character to the player's attack."
+                )
+        else:
+            is_hostile, reason = await self._check_for_provocation(query)
+            self.is_hostile = is_hostile
+            retrieved_memories = self._retrieve_npc_memory(query, self.uagent.name)
+            npc_memories = (
+                retrieved_memories[0] if retrieved_memories else "First encounter."
+            )
+            if self.is_hostile:
+                attack_information = self._perform_attack()
+                logger.info(f"Combat triggered: {reason}")
+                system_content = (
+                    f"You are {self.npc_name}.\n"
+                    f"Character: {character_json}\n"
+                    f"Dialogue style: {self.dialogue_style}\n"
+                    f"Past interactions: {npc_memories}\n"
+                    f"The player provoked you {reason}. You attack!\n"
+                    f"{'CRITICAL HIT!' if attack_information['is_critical'] else ''}\n"
+                    f"{'FUMBLE!' if attack_information['is_fumble'] else ''}\n\n"
+                    f"Describe your attack in character."
+                )
+                combat_summary = (
+                    f"\n\n---\n"
+                    f"**COMBAT INITIATED**\n\n"
+                    f"D20 Roll: {attack_information['d20_roll']}\n\n"
+                    f"{'CRITICAL HIT!\n' if attack_information['is_critical'] else ''}"
+                    f"{'FUMBLE!\n' if attack_information['is_fumble'] else ''}"
+                    f"**Character Stats:**\n\n```json\n{character_json}\n```"
+                )
+            else:
+                system_content = (
+                    f"You are {self.npc_name}.\n"
+                    f"Character: {character_json}\n"
+                    f"Dialogue style: {self.dialogue_style}\n"
+                    f"Past interactions: {npc_memories}\n"
+                    f"Respond in character to the player's message."
+                )
         response = await self.async_client.chat.completions.create(
             model="asi1-mini",
             messages=[
@@ -274,6 +426,7 @@ class NPCAgent:
             ],
         )
         npc_reply = response.choices[0].message.content
+        npc_reply += combat_summary
         if not npc_reply:
             logger.error("Empty response from LLM")
             return "I'm not sure how to respond..."
@@ -291,15 +444,12 @@ class NPCAgent:
 
 
 if __name__ == "__main__":
-    test_description = (
-        "Name: Gary, "
-        "Personality: rude, "
-        "Class: Fighter, "
-        "Race: Dwarf, "
-        "Situation: Hanging out in the tavern"
-    )
+    # Example description (Can copy and paste when prompted for input):
+    # "Name: Gary,\nPersonality: rude,\nClass: Fighter,\nRace: Human,\nSituation: Hanging out in the tavern"
+
     try:
-        agent = NPCAgent(test_description)
+        npc_description = input("Please enter NPC description:")
+        agent = NPCAgent(npc_description)
         agent.run()
     except Exception as e:
         logger.error(f"Failed to start agent: {e}")
